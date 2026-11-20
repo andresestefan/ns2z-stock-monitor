@@ -45,6 +45,43 @@ async function sendTelegram(text) {
   }
 }
 
+async function checkTelegramCommands(lastUpdateId, status) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return lastUpdateId;
+
+  const offset = lastUpdateId ? `?offset=${lastUpdateId + 1}&timeout=0` : '?timeout=0';
+  const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates${offset}`);
+  if (!res.ok) return lastUpdateId;
+
+  const data = await res.json();
+  const updates = data?.result || [];
+  let maxId = lastUpdateId;
+  let requestedStatus = false;
+
+  for (const u of updates) {
+    if (u.update_id > maxId) maxId = u.update_id;
+    const msg = u.message;
+    if (String(msg?.chat?.id) === String(TELEGRAM_CHAT_ID) && /^\/?status\b/i.test((msg?.text || '').trim())) {
+      requestedStatus = true;
+    }
+  }
+
+  if (requestedStatus) {
+    const label = status.inStock ? 'DISPONIBLE' : 'AGOTADO';
+    const history = existsSync(HISTORY_FILE)
+      ? readFileSync(HISTORY_FILE, 'utf8').trim().split('\n').slice(-5).join('\n')
+      : 'Sin registros aún.';
+    const reply =
+      `Estado actual (SKU ${status.sku}): ${label}\n` +
+      `Precio: $${status.price} ${status.currency}\n` +
+      `${PRODUCT_URL}\n\n` +
+      `Últimos registros:\n${history}`;
+    await sendTelegram(reply);
+    log('Respuesta /status enviada a Telegram.');
+  }
+
+  return maxId;
+}
+
 async function checkStock() {
   const res = await fetch(PRODUCT_URL, {
     headers: {
@@ -99,16 +136,15 @@ async function main() {
 
   if (isCi) {
     const prev = existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, 'utf8')) : null;
+    const prevUpdateId = prev?.lastUpdateId ?? 0;
     const status = await checkStock();
     const label = status.inStock ? 'DISPONIBLE' : 'AGOTADO';
     log(`Stock: ${label} (${status.price} ${status.currency})`);
 
     if (!prev) {
       recordHistory(`INICIO | SKU ${status.sku} | ${label} | $${status.price} ${status.currency}`);
-      writeFileSync(STATE_FILE, JSON.stringify({ inStock: status.inStock, updatedAt: new Date().toISOString() }, null, 2) + '\n');
     } else if (status.inStock !== prev.inStock) {
       recordHistory(`CAMBIO | SKU ${status.sku} | ${prev.inStock ? 'DISPONIBLE' : 'AGOTADO'} -> ${label} | $${status.price} ${status.currency}`);
-      writeFileSync(STATE_FILE, JSON.stringify({ inStock: status.inStock, updatedAt: new Date().toISOString() }, null, 2) + '\n');
     }
 
     if (status.inStock && prev?.inStock !== true) {
@@ -119,6 +155,15 @@ async function main() {
         `${PRODUCT_URL}`;
       await sendTelegram(msg);
       log('Alerta enviada por Telegram.');
+    }
+
+    const lastUpdateId = await checkTelegramCommands(prevUpdateId, status);
+
+    if (!prev || status.inStock !== prev.inStock || lastUpdateId !== prevUpdateId) {
+      writeFileSync(
+        STATE_FILE,
+        JSON.stringify({ inStock: status.inStock, lastUpdateId, updatedAt: new Date().toISOString() }, null, 2) + '\n',
+      );
     }
     return;
   }
