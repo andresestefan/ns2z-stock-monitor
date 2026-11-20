@@ -1,0 +1,11 @@
+{
+  "name": "nintendo-stock-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env monitor.mjs",
+    "check-once": "node --env-file-if-exists=.env monitor.mjs --once",
+    "test-telegram": "node --env-file-if-exists=.env monitor.mjs --test"
+  }
+}
